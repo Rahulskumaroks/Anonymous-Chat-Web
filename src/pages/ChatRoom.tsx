@@ -6,7 +6,7 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { toast } from "@/hooks/use-toast";
 import { WS_URL } from "@/lib/chatApi";
 import { Copy, LogOut, Send, Users, WifiOff, Clock } from "lucide-react";
-import { useChatSocket } from "@/hooks/Usechatsocket";
+import { useChatSocket } from "@/hooks/useChatSocket";
 
 const MESSAGE_TTL_MS = 4 * 60 * 1000; // must match server
 
