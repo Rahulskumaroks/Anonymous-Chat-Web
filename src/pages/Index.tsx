@@ -58,7 +58,7 @@ const Index = () => {
           <div className="mx-auto mb-3 flex h-14 w-14 items-center justify-center rounded-2xl bg-primary/10">
             <MessageCircle className="h-7 w-7 text-primary" />
           </div>
-          <CardTitle className="text-2xl">Anonymous Chat</CardTitle>
+          <CardTitle className="text-2xl">Meuzz Chat</CardTitle>
           <CardDescription>Create or join an ephemeral chat room. No signup needed.</CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
