@@ -75,34 +75,16 @@ export function AuthModal({ open, onClose, onSuccess }: AuthModalProps) {
             <TabsTrigger value="signup" className="flex-1">Sign Up</TabsTrigger>
           </TabsList>
 
-          <TabsContent value="login" className="space-y-4 mt-4">
-            <EmailPasswordForm
-              email={email} setEmail={setEmail}
-              password={password} setPassword={setPassword}
-            />
-          </TabsContent>
+      
 
-          <TabsContent value="signup" className="space-y-4 mt-4">
-            <div className="space-y-2">
-              <Label>Name</Label>
-              <Input 
-                placeholder="Your name" 
-                value={name} 
-                onChange={(e) => setName(e.target.value)} 
-              />
-            </div>
-            <EmailPasswordForm
-              email={email} setEmail={setEmail}
-              password={password} setPassword={setPassword}
-            />
-          </TabsContent>
+      
         </Tabs>
 
         {error && <p className="text-sm text-destructive">{error}</p>}
 
-        <Button className="w-full" onClick={handleSubmit} disabled={loading}>
+        {/* <Button className="w-full" onClick={handleSubmit} disabled={loading}>
           {loading ? "Please wait..." : tab === "login" ? "Login" : "Create Account"}
-        </Button>
+        </Button> */}
 
         <div className="flex items-center gap-2 my-1">
           <Separator className="flex-1" />
