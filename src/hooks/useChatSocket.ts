@@ -1,196 +1,198 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useCallback, useState } from "react";
+
+export type MessageReactions = Record<string, string[]>;
 
 export type ChatMessage = {
-  id?: string;
   type: "message" | "system";
+  id?: string;
   username?: string;
   text: string;
   timestamp: number;
+  reactions?: MessageReactions;
 };
 
-export type ConnectionStatus = "connecting" | "connected" | "reconnecting";
+type Status = "connecting" | "connected" | "reconnecting" | "disconnected";
 
 interface UseChatSocketOptions {
   serverUrl: string;
-  roomCode: string;
+  roomId: string;
+  roomCode?: string;
   username: string;
   onError?: (msg: string) => void;
 }
 
-interface UseChatSocketReturn {
-  messages: ChatMessage[];
-  users: string[];
-  typingUsers: string[];
-  status: ConnectionStatus;
-  sendMessage: (text: string) => void;
-  sendTyping: () => void;
-  disconnect: () => void;
-}
-
-export function useChatSocket({
-  serverUrl,
-  roomCode,
-  username,
-  onError,
-}: UseChatSocketOptions): UseChatSocketReturn {
-  const [messages, setMessages] = useState<ChatMessage[]>([]);
-  const [users, setUsers] = useState<string[]>([]);
+export function useChatSocket({ serverUrl, roomId, roomCode, username, onError }: UseChatSocketOptions) {
+  const [messages, setMessages]       = useState<ChatMessage[]>([]);
+  const [users, setUsers]             = useState<string[]>([]);
   const [typingUsers, setTypingUsers] = useState<string[]>([]);
-  const [status, setStatus] = useState<ConnectionStatus>("connecting");
+  const [status, setStatus]           = useState<Status>("connecting");
 
-  // All mutable state lives in refs — avoids stale closures entirely
-  const wsRef = useRef<WebSocket | null>(null);
-  const intentionalClose = useRef(false);
-  const reconnectTimer = useRef<ReturnType<typeof setTimeout>>();
-  const statusTimer = useRef<ReturnType<typeof setTimeout>>();
-  const pingInterval = useRef<ReturnType<typeof setInterval>>();
-  const typingTimers = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
+  const wsRef            = useRef<WebSocket | null>(null);
+  const reconnectTimer   = useRef<ReturnType<typeof setTimeout>>();
+  const typingTimers     = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
+  const mountedRef       = useRef(true);
+  const reconnectAttempt = useRef(0);
+  const maxReconnectAttempts = 5;
 
-  // Keep latest prop values accessible inside stable callbacks
-  const propsRef = useRef({ serverUrl, roomCode, username, onError });
-  propsRef.current = { serverUrl, roomCode, username, onError };
-
-  // connectRef holds the connect function so ws.onclose can call it
-  // without creating a new closure chain on every call
-  const connectRef = useRef<() => void>();
+  const optionsRef = useRef({ serverUrl, roomId, roomCode, username, onError });
 
   useEffect(() => {
-    intentionalClose.current = false;
+    optionsRef.current = { serverUrl, roomId, roomCode, username, onError };
+  }, [serverUrl, roomId, roomCode, username, onError]);
 
-    function cleanup(ws: WebSocket) {
-      ws.onopen = null;
-      ws.onmessage = null;
-      ws.onerror = null;
-      ws.onclose = null;
-      clearInterval(pingInterval.current);
+  const connect = useCallback(() => {
+    if (!mountedRef.current) return;
+
+    const { serverUrl, roomId, roomCode, username, onError } = optionsRef.current;
+
+    if (!serverUrl || !roomId || !username) {
+      console.warn('Missing required WebSocket params:', { serverUrl, roomId, username });
+      setStatus("disconnected");
+      onError?.("Missing required connection parameters");
+      return;
     }
 
-    function connect() {
-      // Hard-stop if intentional disconnect
-      if (intentionalClose.current) return;
+    if (wsRef.current?.readyState === WebSocket.CONNECTING ||
+        wsRef.current?.readyState === WebSocket.OPEN) {
+      console.log('WebSocket already connecting or connected, skipping...');
+      return;
+    }
 
-      // Tear down existing socket cleanly before making a new one
-      if (wsRef.current) {
-        cleanup(wsRef.current);
-        wsRef.current.close();
-        wsRef.current = null;
+    console.log('Connecting to WebSocket:', { serverUrl, roomId, username, hasCode: !!roomCode });
+
+    const ws = new WebSocket(serverUrl);
+    wsRef.current = ws;
+
+    ws.onopen = () => {
+      console.log('✅ WebSocket connected');
+      reconnectAttempt.current = 0;
+      setStatus("connected");
+
+      ws.send(JSON.stringify({
+        type: "join",
+        roomId,
+        username,
+        ...(roomCode ? { roomCode } : {}),
+      }));
+    };
+
+    ws.onmessage = (event) => {
+      let data: any;
+      try { data = JSON.parse(event.data); } catch { return; }
+
+      switch (data.type) {
+        case "joined":
+          setMessages(data.messages || []);
+          setUsers(data.users || []);
+          break;
+
+        case "message":
+        case "system":
+          setMessages(prev => [...prev, data]);
+          break;
+
+        case "messages-expired":
+          setMessages(prev => prev.filter(m => !data.ids.includes(m.id)));
+          break;
+
+        case "user-update":
+          setUsers(data.users || []);
+          break;
+
+        case "typing": {
+          const u = data.username;
+          if (u === optionsRef.current.username) break;
+          setTypingUsers(prev => prev.includes(u) ? prev : [...prev, u]);
+          if (typingTimers.current[u]) clearTimeout(typingTimers.current[u]);
+          typingTimers.current[u] = setTimeout(() => {
+            setTypingUsers(prev => prev.filter(x => x !== u));
+          }, 3000);
+          break;
+        }
+
+        case "reaction-update":
+          setMessages(prev =>
+            prev.map(m => m.id === data.messageId ? { ...m, reactions: data.reactions } : m)
+          );
+          break;
+
+        case "error":
+          console.error('❌ WebSocket error:', data.message);
+          optionsRef.current.onError?.(data.message);
+          break;
+
+        case "pong":
+          break;
+      }
+    };
+
+    ws.onclose = (event) => {
+      console.log('❌ WebSocket closed:', event.code, event.reason);
+
+      if (!mountedRef.current) return;
+
+      if (reconnectAttempt.current >= maxReconnectAttempts) {
+        console.error('Max reconnection attempts reached');
+        setStatus("disconnected");
+        optionsRef.current.onError?.("Connection lost. Please refresh the page.");
+        return;
       }
 
-      const { serverUrl, roomCode, username, onError } = propsRef.current;
-      const ws = new WebSocket(serverUrl);
-      wsRef.current = ws;
+      setStatus("reconnecting");
+      const delay = Math.min(1000 * 2 ** reconnectAttempt.current, 15000);
+      console.log(`🔄 Reconnection attempt ${reconnectAttempt.current + 1} in ${delay}ms`);
+      reconnectAttempt.current++;
+      reconnectTimer.current = setTimeout(connect, delay);
+    };
 
-      ws.onopen = () => {
-        clearTimeout(statusTimer.current);
-        clearTimeout(reconnectTimer.current);
-        setStatus("connected");
+    ws.onerror = (error) => {
+      console.error('❌ WebSocket error event:', error);
+    };
+  }, []);
 
-        ws.send(JSON.stringify({ type: "join", roomCode, username }));
-
-        // Keep-alive
-        pingInterval.current = setInterval(() => {
-          if (ws.readyState === WebSocket.OPEN) {
-            ws.send(JSON.stringify({ type: "ping" }));
-          }
-        }, 25_000);
-      };
-
-      ws.onmessage = (event) => {
-        let data: any;
-        try { data = JSON.parse(event.data); } catch { return; }
-        const { username: self } = propsRef.current;
-
-        switch (data.type) {
-          case "joined":
-            setMessages(data.messages || []);
-            setUsers(data.users || []);
-            break;
-          case "message":
-            setMessages((prev) => {
-              if (data.id && prev.some((m) => m.id === data.id)) return prev;
-              return [...prev, data as ChatMessage];
-            });
-            break;
-          case "system":
-            setMessages((prev) => [...prev, data as ChatMessage]);
-            break;
-          case "user-update":
-            setUsers(data.users || []);
-            break;
-          case "typing": {
-            const typer = data.username as string;
-            if (typer === self) break;
-            setTypingUsers((prev) => prev.includes(typer) ? prev : [...prev, typer]);
-            const old = typingTimers.current.get(typer);
-            if (old) clearTimeout(old);
-            const t = setTimeout(() => {
-              setTypingUsers((prev) => prev.filter((u) => u !== typer));
-              typingTimers.current.delete(typer);
-            }, 2500);
-            typingTimers.current.set(typer, t);
-            break;
-          }
-          case "messages-expired": {
-            const ids = new Set(data.ids as string[]);
-            setMessages((prev) => prev.filter((m) => !m.id || !ids.has(m.id)));
-            break;
-          }
-          case "error":
-            propsRef.current.onError?.(data.message);
-            break;
-        }
-      };
-
-      ws.onerror = () => { /* close fires right after */ };
-
-      ws.onclose = () => {
-        cleanup(ws);
-        if (intentionalClose.current) return;
-
-        // Show "reconnecting" only after 1.5s to avoid flash on brief hiccups
-        statusTimer.current = setTimeout(() => setStatus("reconnecting"), 1500);
-
-        // Retry after 3s — use connectRef so we don't capture a stale closure
-        reconnectTimer.current = setTimeout(() => connectRef.current?.(), 3000);
-      };
-    }
-
-    // Store in ref so ws.onclose can reach it without stale closure
-    connectRef.current = connect;
+  useEffect(() => {
+    mountedRef.current = true;
     connect();
 
     return () => {
-      intentionalClose.current = true;
+      console.log('🔌 Cleaning up WebSocket');
+      mountedRef.current = false;
       clearTimeout(reconnectTimer.current);
-      clearTimeout(statusTimer.current);
-      clearInterval(pingInterval.current);
-      typingTimers.current.forEach(clearTimeout);
-      if (wsRef.current) {
-        cleanup(wsRef.current);
-        wsRef.current.close();
-        wsRef.current = null;
-      }
-    };
-  }, []); // ← empty: runs once. Props accessed via propsRef, never stale.
-
-  function sendMessage(text: string) {
-    wsRef.current?.send(JSON.stringify({ type: "message", text }));
-  }
-
-  function sendTyping() {
-    wsRef.current?.send(JSON.stringify({ type: "typing" }));
-  }
-
-  function disconnect() {
-    intentionalClose.current = true;
-    clearTimeout(reconnectTimer.current);
-    clearTimeout(statusTimer.current);
-    if (wsRef.current) {
-      wsRef.current.onclose = null;
-      wsRef.current.close();
+      Object.values(typingTimers.current).forEach(timer => clearTimeout(timer));
+      wsRef.current?.close();
       wsRef.current = null;
-    }
-  }
+    };
+  }, []);
 
-  return { messages, users, typingUsers, status, sendMessage, sendTyping, disconnect };
+  const sendMessage = useCallback((text: string) => {
+    if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) {
+      console.warn('Cannot send message: WebSocket not connected');
+      optionsRef.current.onError?.('Not connected to chat');
+      return;
+    }
+    wsRef.current.send(JSON.stringify({ type: "message", text }));
+  }, []);
+
+  const sendTyping = useCallback(() => {
+    if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
+    wsRef.current.send(JSON.stringify({ type: "typing" }));
+  }, []);
+
+  const sendReaction = useCallback((messageId: string, emoji: string) => {
+    if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
+    wsRef.current.send(JSON.stringify({ type: "react", messageId, emoji }));
+  }, []);
+
+  const disconnect = useCallback(() => {
+    console.log('🔌 Disconnecting WebSocket');
+    mountedRef.current = false;
+    clearTimeout(reconnectTimer.current);
+    if (wsRef.current?.readyState === WebSocket.OPEN) {
+      wsRef.current.send(JSON.stringify({ type: "leave" }));
+    }
+    wsRef.current?.close();
+    wsRef.current = null;
+  }, []);
+
+  return { messages, users, typingUsers, status, sendMessage, sendTyping, sendReaction, disconnect };
 }
