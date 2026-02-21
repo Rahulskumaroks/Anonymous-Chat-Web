@@ -385,8 +385,11 @@ const Index = () => {
           <Plus className="h-7 w-7 text-white" strokeWidth={2.5} />
         </button>
         
-      <button onClick={() => navigate("/profile")} className="...">
-  <User className="h-7 w-7 text-white" strokeWidth={2.5} />
+  <button 
+  onClick={() => navigate("/profile")} 
+  className="flex flex-col items-center gap-1 text-gray-400 hover:text-white transition-colors"
+>
+  <User className="h-6 w-6" />
   <span className="text-xs font-medium">Profile</span>
 </button>
       </div>
